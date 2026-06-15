@@ -70,7 +70,7 @@
   <div class="row" style="margin-top:6px;">
     <button id="exportBoundaryBtn" class="secondary">Export Boundary GeoJSON</button>
     <button id="exportRoadsBtn" class="secondary">Export Roads GeoJSON</button>
-    <button id="exportBuildingsBtn" class="secondary">Export Buildings GeoJSON</button>
+    <button id="exportBuildingsBtn" class="secondary">Export Buildings CSV</button>
     <button id="exportOpenSpaceBtn" class="secondary">Export Open Space GeoJSON</button>
     <button id="clearAllBtn" class="danger">Clear All Data</button>
   </div>
@@ -180,6 +180,8 @@
         <option value="4">4</option>
         <option value="5">5+</option>
       </select>
+      <label>Approx. Plot Size (sq.m)</label>
+      <input type="number" id="f_building_plotsize" min="0" step="1" placeholder="e.g. 45">
       <label>Remarks</label>
       <textarea id="f_building_remarks" rows="2"></textarea>
     </div>
@@ -272,7 +274,8 @@ function redrawSaved() {
     const ll = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
     const floorLabel = floorsToLabel(f.properties.floors);
     const marker = L.circleMarker(ll, {radius:5, color:'darkorange', fillColor:'orange', fillOpacity:0.9}).addTo(map);
-    marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>Units: ${f.properties.units}<br>${f.properties.remarks || ''}`);
+    const plotSizeStr = (f.properties.plot_size_sqm !== null && f.properties.plot_size_sqm !== undefined) ? `${f.properties.plot_size_sqm} sq.m` : 'Not recorded';
+    marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>Units: ${f.properties.units}<br>Plot size: ${plotSizeStr}<br>${f.properties.remarks || ''}`);
     savedLayers.push(marker);
   });
   openspaceFeatures.forEach(f => {
@@ -298,7 +301,8 @@ function renderFeatureList() {
     html += `<div class="feature-item"><span>[Road] ${f.properties.road_name || '(unnamed)'} (${f.properties.road_type}, ${f.properties.width_m}m)</span><button onclick="deleteFeature('roads',${i})">Delete</button></div>`;
   });
   buildingFeatures.forEach((f, i) => {
-    html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}, ${f.properties.units} unit(s)</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
+    const plotSizeLabel = (f.properties.plot_size_sqm !== null && f.properties.plot_size_sqm !== undefined) ? `, ${f.properties.plot_size_sqm} sq.m` : '';
+    html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}, ${f.properties.units} unit(s)${plotSizeLabel}</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
   });
   openspaceFeatures.forEach((f, i) => {
     html += `<div class="feature-item"><span>[Open Space] ${f.properties.os_name || '(unnamed)'} (${f.properties.os_type})</span><button onclick="deleteFeature('openspace',${i})">Delete</button></div>`;
@@ -565,6 +569,7 @@ document.getElementById('modalSave').addEventListener('click', () => {
         floors: parseInt(document.getElementById('f_building_floors').value, 10),
         bldg_use: document.getElementById('f_building_use').value,
         units: parseInt(document.getElementById('f_building_units').value, 10),
+        plot_size_sqm: document.getElementById('f_building_plotsize').value ? parseFloat(document.getElementById('f_building_plotsize').value) : null,
         remarks: document.getElementById('f_building_remarks').value || '',
         date_cap: todayStr()
       }
@@ -574,6 +579,7 @@ document.getElementById('modalSave').addEventListener('click', () => {
     redrawSaved();
     renderFeatureList();
     document.getElementById('f_building_remarks').value = '';
+    document.getElementById('f_building_plotsize').value = '';
     pendingBuildingLL = null;
     closeModal();
     setStatus(`Building saved (${floorsToLabel(feature.properties.floors)}, ${feature.properties.bldg_use}, ${feature.properties.units} unit(s)). Tap "Add Building" for the next one.`);
@@ -661,6 +667,25 @@ function downloadGeoJSON(features, filename) {
   URL.revokeObjectURL(url);
 }
 
+function downloadCSV(rows, headers, filename) {
+  const escapeCell = (val) => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (/[",\n]/.test(str)) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  };
+  const lines = [headers.join(',')];
+  rows.forEach(r => lines.push(headers.map(h => escapeCell(r[h])).join(',')));
+  const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 document.getElementById('exportBoundaryBtn').addEventListener('click', () => {
   if (boundaryFeatures.length === 0) { alert('No boundary features saved yet.'); return; }
   downloadGeoJSON(boundaryFeatures, `boundary_${todayStr()}.geojson`);
@@ -671,7 +696,19 @@ document.getElementById('exportRoadsBtn').addEventListener('click', () => {
 });
 document.getElementById('exportBuildingsBtn').addEventListener('click', () => {
   if (buildingFeatures.length === 0) { alert('No building features saved yet.'); return; }
-  downloadGeoJSON(buildingFeatures, `buildings_${todayStr()}.geojson`);
+  const headers = ['lat','lon','floors','floor_label','bldg_use','units','plot_size_sqm','remarks','date_cap'];
+  const rows = buildingFeatures.map(f => ({
+    lat: f.geometry.coordinates[1],
+    lon: f.geometry.coordinates[0],
+    floors: f.properties.floors,
+    floor_label: floorsToLabel(f.properties.floors),
+    bldg_use: f.properties.bldg_use,
+    units: f.properties.units,
+    plot_size_sqm: (f.properties.plot_size_sqm !== null && f.properties.plot_size_sqm !== undefined) ? f.properties.plot_size_sqm : '',
+    remarks: f.properties.remarks || '',
+    date_cap: f.properties.date_cap || ''
+  }));
+  downloadCSV(rows, headers, `buildings_${todayStr()}.csv`);
 });
 document.getElementById('exportOpenSpaceBtn').addEventListener('click', () => {
   if (openspaceFeatures.length === 0) { alert('No open space features saved yet.'); return; }
