@@ -51,6 +51,10 @@
     <button id="finishBtn" disabled>Finish</button>
     <button id="cancelBtn" class="danger" disabled>Cancel</button>
   </div>
+  <div class="row">
+    <button id="addManualBtn" class="secondary" disabled>Add Manual Point</button>
+    <button id="addSnapshotBtn" class="secondary" disabled>Add GPS Snapshot</button>
+  </div>
   <div id="status">Ready. Select a layer and tap "Start Recording" to begin walking.</div>
   <div class="row" style="margin-top:6px;">
     <button id="exportBoundaryBtn" class="secondary">Export Boundary GeoJSON</button>
@@ -104,6 +108,12 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 let currentMarker = null;
 
+// Tap-to-place a manual point when "Add Manual Point" mode is armed
+map.on('click', e => {
+  if (!manualPointMode) return;
+  addManualPoint([e.latlng.lat, e.latlng.lng], 'manual_tap');
+});
+
 // ---------- State ----------
 let mode = 'boundary';
 let recording = false;
@@ -114,6 +124,9 @@ let liveLine = null;
 let boundaryFeatures = JSON.parse(localStorage.getItem('boundaryFeatures') || '[]');
 let roadFeatures = JSON.parse(localStorage.getItem('roadFeatures') || '[]');
 let savedLayers = [];
+
+let manualPointMode = false; // true while "Add Manual Point" (map-tap) is armed
+let manualMarkers = [];       // markers for manually-added/snapshot points in the current feature
 
 const MIN_DISTANCE_M = 2; // minimum movement before adding a new point
 
@@ -179,6 +192,28 @@ function todayStr() {
   return new Date().toISOString().slice(0,10);
 }
 
+// Append a manually-placed or GPS-snapshot point to the current track
+// (only used while recording is paused, so it can't race with watchPosition)
+function addManualPoint(ll, source) {
+  currentTrack.push(ll);
+  if (!liveLine) {
+    liveLine = L.polyline([], {color:'orange', weight:4, dashArray:'4,4'}).addTo(map);
+  }
+  liveLine.setLatLngs(currentTrack);
+
+  const isSnapshot = source === 'gps_snapshot';
+  const marker = L.circleMarker(ll, {
+    radius: 7,
+    color: isSnapshot ? 'darkgreen' : 'purple',
+    fillColor: isSnapshot ? 'darkgreen' : 'purple',
+    fillOpacity: 0.9
+  }).addTo(map);
+  marker.bindPopup(isSnapshot ? 'GPS snapshot point' : 'Manual point (map tap)');
+  manualMarkers.push(marker);
+
+  setStatus(`${isSnapshot ? 'GPS snapshot' : 'Manual point'} added (${ll[0].toFixed(6)}, ${ll[1].toFixed(6)}). ${currentTrack.length} points total. Add more, or tap Resume / Finish.`);
+}
+
 // ---------- Recording controls ----------
 document.getElementById('modeSelect').addEventListener('change', e => { mode = e.target.value; });
 
@@ -198,6 +233,27 @@ document.getElementById('resumeBtn').addEventListener('click', startRecording);
 document.getElementById('finishBtn').addEventListener('click', finishRecording);
 document.getElementById('cancelBtn').addEventListener('click', cancelRecording);
 
+document.getElementById('addManualBtn').addEventListener('click', () => {
+  const btn = document.getElementById('addManualBtn');
+  manualPointMode = !manualPointMode;
+  if (manualPointMode) {
+    btn.textContent = 'Tap map to place point (tap again to stop)';
+    btn.classList.add('danger');
+    setStatus('Manual point mode ON — tap the map where the boundary/road continues. Tap this button again to turn off.');
+  } else {
+    btn.textContent = 'Add Manual Point';
+    btn.classList.remove('danger');
+    setStatus(`Paused. ${currentTrack.length} points captured so far. Tap Resume to continue, or Finish to end this feature.`);
+  }
+});
+
+document.getElementById('addSnapshotBtn').addEventListener('click', () => {
+  if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
+  navigator.geolocation.getCurrentPosition(pos => {
+    addManualPoint([pos.coords.latitude, pos.coords.longitude], 'gps_snapshot');
+  }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
+});
+
 function startRecording() {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
   recording = true;
@@ -207,6 +263,14 @@ function startRecording() {
   document.getElementById('finishBtn').disabled = false;
   document.getElementById('cancelBtn').disabled = false;
   document.getElementById('modeSelect').disabled = true;
+
+  // manual point / snapshot tools are only usable while paused
+  manualPointMode = false;
+  const addManualBtn = document.getElementById('addManualBtn');
+  addManualBtn.textContent = 'Add Manual Point';
+  addManualBtn.classList.remove('danger');
+  addManualBtn.disabled = true;
+  document.getElementById('addSnapshotBtn').disabled = true;
 
   if (!liveLine) {
     liveLine = L.polyline([], {color:'orange', weight:4, dashArray:'4,4'}).addTo(map);
@@ -233,7 +297,9 @@ function pauseRecording() {
   watchId = null;
   document.getElementById('pauseBtn').disabled = true;
   document.getElementById('resumeBtn').disabled = false;
-  setStatus(`Paused. ${currentTrack.length} points captured so far. Tap Resume to continue, or Finish to end this feature.`);
+  document.getElementById('addManualBtn').disabled = false;
+  document.getElementById('addSnapshotBtn').disabled = false;
+  setStatus(`Paused. ${currentTrack.length} points captured so far. To bridge an obstacle, use "Add Manual Point" (tap the map) or "Add GPS Snapshot" (your current location), then tap Resume to continue, or Finish to end this feature.`);
 }
 
 function cancelRecording() {
@@ -254,6 +320,18 @@ function resetButtons() {
   document.getElementById('finishBtn').disabled = true;
   document.getElementById('cancelBtn').disabled = true;
   document.getElementById('modeSelect').disabled = false;
+
+  // manual point / snapshot tools
+  manualPointMode = false;
+  const addManualBtn = document.getElementById('addManualBtn');
+  addManualBtn.textContent = 'Add Manual Point';
+  addManualBtn.classList.remove('danger');
+  addManualBtn.disabled = true;
+  document.getElementById('addSnapshotBtn').disabled = true;
+
+  // clear any manual/snapshot markers from the finished/cancelled feature
+  manualMarkers.forEach(m => map.removeLayer(m));
+  manualMarkers = [];
 }
 
 function finishRecording() {
