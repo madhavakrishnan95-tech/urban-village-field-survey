@@ -41,24 +41,32 @@
     <select id="modeSelect">
       <option value="boundary">Village Boundary (polygon)</option>
       <option value="roads">Road (line)</option>
+      <option value="buildings">Building (point)</option>
     </select>
     <button id="locateBtn" class="secondary">Locate me</button>
   </div>
-  <div class="row">
-    <button id="recordBtn">Start Recording</button>
-    <button id="pauseBtn" disabled>Pause</button>
-    <button id="resumeBtn" disabled>Resume</button>
-    <button id="finishBtn" disabled>Finish</button>
-    <button id="cancelBtn" class="danger" disabled>Cancel</button>
+  <div id="trackControls">
+    <div class="row">
+      <button id="recordBtn">Start Recording</button>
+      <button id="pauseBtn" disabled>Pause</button>
+      <button id="resumeBtn" disabled>Resume</button>
+      <button id="finishBtn" disabled>Finish</button>
+      <button id="cancelBtn" class="danger" disabled>Cancel</button>
+    </div>
+    <div class="row">
+      <button id="addManualBtn" class="secondary" disabled>Add Manual Point</button>
+      <button id="addSnapshotBtn" class="secondary" disabled>Add GPS Snapshot</button>
+    </div>
   </div>
-  <div class="row">
-    <button id="addManualBtn" class="secondary" disabled>Add Manual Point</button>
-    <button id="addSnapshotBtn" class="secondary" disabled>Add GPS Snapshot</button>
+  <div class="row" id="buildingControls" style="display:none;">
+    <button id="addBuildingTapBtn" class="secondary">Add Building (Tap Map)</button>
+    <button id="addBuildingGpsBtn" class="secondary">Add Building (GPS)</button>
   </div>
   <div id="status">Ready. Select a layer and tap "Start Recording" to begin walking.</div>
   <div class="row" style="margin-top:6px;">
     <button id="exportBoundaryBtn" class="secondary">Export Boundary GeoJSON</button>
     <button id="exportRoadsBtn" class="secondary">Export Roads GeoJSON</button>
+    <button id="exportBuildingsBtn" class="secondary">Export Buildings GeoJSON</button>
     <button id="clearAllBtn" class="danger">Clear All Data</button>
   </div>
   <div id="featureList"></div>
@@ -78,7 +86,24 @@
       <label>Road Name / Number</label>
       <input type="text" id="f_road_name" placeholder="e.g. Lane 3 / KS Main Road">
       <label>Width (meters)</label>
-      <input type="number" id="f_width_m" step="0.1" min="0">
+      <select id="f_width_m">
+        <option value="" selected disabled>Select width</option>
+        <option value="1">1 m</option>
+        <option value="1.5">1.5 m</option>
+        <option value="2">2 m</option>
+        <option value="2.5">2.5 m</option>
+        <option value="3">3 m</option>
+        <option value="3.5">3.5 m</option>
+        <option value="4">4 m</option>
+        <option value="5">5 m</option>
+        <option value="6">6 m</option>
+        <option value="7">7 m</option>
+        <option value="8">8 m</option>
+        <option value="10">10 m</option>
+        <option value="12">12 m</option>
+        <option value="15">15 m</option>
+        <option value="20">20 m</option>
+      </select>
       <label>Road Type</label>
       <select id="f_road_type">
         <option>Main Road</option>
@@ -89,6 +114,28 @@
       </select>
       <label>Remarks</label>
       <textarea id="f_road_remarks" rows="2"></textarea>
+    </div>
+    <div id="buildingFields" style="display:none;">
+      <label>Number of Floors</label>
+      <select id="f_building_floors">
+        <option value="1">G (Ground only)</option>
+        <option value="2">G+1</option>
+        <option value="3">G+2</option>
+        <option value="4">G+3</option>
+        <option value="5">G+4</option>
+        <option value="6">G+5 or more</option>
+      </select>
+      <label>Building Use</label>
+      <select id="f_building_use">
+        <option>Residential</option>
+        <option>Commercial</option>
+        <option>Mixed (Residential + Commercial)</option>
+        <option>Institutional</option>
+        <option>Vacant / Under Construction</option>
+        <option>Other</option>
+      </select>
+      <label>Remarks</label>
+      <textarea id="f_building_remarks" rows="2"></textarea>
     </div>
     <div class="row">
       <button id="modalCancel" class="secondary">Discard</button>
@@ -108,10 +155,19 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 let currentMarker = null;
 
-// Tap-to-place a manual point when "Add Manual Point" mode is armed
+// Tap-to-place a manual point ("Add Manual Point") or a building point ("Add Building - Tap Map")
 map.on('click', e => {
-  if (!manualPointMode) return;
-  addManualPoint([e.latlng.lat, e.latlng.lng], 'manual_tap');
+  if (manualPointMode) {
+    addManualPoint([e.latlng.lat, e.latlng.lng], 'manual_tap');
+    return;
+  }
+  if (buildingTapMode) {
+    buildingTapMode = false;
+    const btn = document.getElementById('addBuildingTapBtn');
+    btn.textContent = 'Add Building (Tap Map)';
+    btn.classList.remove('danger');
+    openBuildingModal([e.latlng.lat, e.latlng.lng]);
+  }
 });
 
 // ---------- State ----------
@@ -123,10 +179,15 @@ let liveLine = null;
 
 let boundaryFeatures = JSON.parse(localStorage.getItem('boundaryFeatures') || '[]');
 let roadFeatures = JSON.parse(localStorage.getItem('roadFeatures') || '[]');
+let buildingFeatures = JSON.parse(localStorage.getItem('buildingFeatures') || '[]');
 let savedLayers = [];
 
 let manualPointMode = false; // true while "Add Manual Point" (map-tap) is armed
 let manualMarkers = [];       // markers for manually-added/snapshot points in the current feature
+
+let buildingTapMode = false;  // true while "Add Building (Tap Map)" is armed
+let pendingBuildingLL = null; // [lat,lon] awaiting building attribute save
+let modalContext = 'feature'; // 'feature' (boundary/road track) or 'building'
 
 const MIN_DISTANCE_M = 2; // minimum movement before adding a new point
 
@@ -160,6 +221,17 @@ function redrawSaved() {
     line.bindPopup(`<b>${f.properties.road_name || '(unnamed)'}</b><br>Type: ${f.properties.road_type}<br>Width: ${f.properties.width_m} m<br>${f.properties.remarks || ''}`);
     savedLayers.push(line);
   });
+  buildingFeatures.forEach(f => {
+    const ll = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+    const floorLabel = floorsToLabel(f.properties.floors);
+    const marker = L.circleMarker(ll, {radius:5, color:'darkorange', fillColor:'orange', fillOpacity:0.9}).addTo(map);
+    marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>${f.properties.remarks || ''}`);
+    savedLayers.push(marker);
+  });
+}
+
+function floorsToLabel(floors) {
+  return floors === 1 ? 'G' : `G+${floors - 1}`;
 }
 
 function renderFeatureList() {
@@ -171,13 +243,17 @@ function renderFeatureList() {
   roadFeatures.forEach((f, i) => {
     html += `<div class="feature-item"><span>[Road] ${f.properties.road_name || '(unnamed)'} (${f.properties.road_type}, ${f.properties.width_m}m)</span><button onclick="deleteFeature('roads',${i})">Delete</button></div>`;
   });
+  buildingFeatures.forEach((f, i) => {
+    html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
+  });
   el.innerHTML = html || '<i>No features saved yet.</i>';
 }
 
 function deleteFeature(layer, idx) {
   if (!confirm('Delete this feature?')) return;
   if (layer === 'boundary') boundaryFeatures.splice(idx,1);
-  else roadFeatures.splice(idx,1);
+  else if (layer === 'roads') roadFeatures.splice(idx,1);
+  else buildingFeatures.splice(idx,1);
   persist();
   redrawSaved();
   renderFeatureList();
@@ -186,6 +262,7 @@ function deleteFeature(layer, idx) {
 function persist() {
   localStorage.setItem('boundaryFeatures', JSON.stringify(boundaryFeatures));
   localStorage.setItem('roadFeatures', JSON.stringify(roadFeatures));
+  localStorage.setItem('buildingFeatures', JSON.stringify(buildingFeatures));
 }
 
 function todayStr() {
@@ -215,7 +292,15 @@ function addManualPoint(ll, source) {
 }
 
 // ---------- Recording controls ----------
-document.getElementById('modeSelect').addEventListener('change', e => { mode = e.target.value; });
+document.getElementById('modeSelect').addEventListener('change', e => {
+  mode = e.target.value;
+  const isBuilding = mode === 'buildings';
+  document.getElementById('trackControls').style.display = isBuilding ? 'none' : '';
+  document.getElementById('buildingControls').style.display = isBuilding ? 'flex' : 'none';
+  setStatus(isBuilding
+    ? 'Building mode: tap "Add Building (Tap Map)" or "Add Building (GPS)" for each building you pass.'
+    : 'Ready. Select a layer and tap "Start Recording" to begin walking.');
+});
 
 document.getElementById('locateBtn').addEventListener('click', () => {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
@@ -253,6 +338,38 @@ document.getElementById('addSnapshotBtn').addEventListener('click', () => {
     addManualPoint([pos.coords.latitude, pos.coords.longitude], 'gps_snapshot');
   }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
 });
+
+// ---------- Building point capture ----------
+document.getElementById('addBuildingTapBtn').addEventListener('click', () => {
+  const btn = document.getElementById('addBuildingTapBtn');
+  buildingTapMode = !buildingTapMode;
+  if (buildingTapMode) {
+    btn.textContent = 'Tap the map on the building (tap again to cancel)';
+    btn.classList.add('danger');
+    setStatus('Tap the map at the building location.');
+  } else {
+    btn.textContent = 'Add Building (Tap Map)';
+    btn.classList.remove('danger');
+    setStatus('Building mode: tap "Add Building (Tap Map)" or "Add Building (GPS)" for each building you pass.');
+  }
+});
+
+document.getElementById('addBuildingGpsBtn').addEventListener('click', () => {
+  if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
+  navigator.geolocation.getCurrentPosition(pos => {
+    openBuildingModal([pos.coords.latitude, pos.coords.longitude]);
+  }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
+});
+
+function openBuildingModal(ll) {
+  pendingBuildingLL = ll;
+  modalContext = 'building';
+  document.getElementById('modalOverlay').style.display = 'flex';
+  document.getElementById('modalTitle').textContent = 'Building details';
+  document.getElementById('boundaryFields').style.display = 'none';
+  document.getElementById('roadFields').style.display = 'none';
+  document.getElementById('buildingFields').style.display = 'block';
+}
 
 function startRecording() {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
@@ -348,7 +465,9 @@ function finishRecording() {
 
 // ---------- Attribute modal ----------
 function openModal() {
+  modalContext = 'feature';
   document.getElementById('modalOverlay').style.display = 'flex';
+  document.getElementById('buildingFields').style.display = 'none';
   if (mode === 'boundary') {
     document.getElementById('modalTitle').textContent = 'Boundary details';
     document.getElementById('boundaryFields').style.display = 'block';
@@ -366,10 +485,35 @@ function closeModal() {
 
 document.getElementById('modalCancel').addEventListener('click', () => {
   closeModal();
-  cancelRecording();
+  if (modalContext === 'building') {
+    pendingBuildingLL = null;
+  } else {
+    cancelRecording();
+  }
 });
 
 document.getElementById('modalSave').addEventListener('click', () => {
+  if (modalContext === 'building') {
+    const feature = {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [pendingBuildingLL[1], pendingBuildingLL[0]] },
+      properties: {
+        floors: parseInt(document.getElementById('f_building_floors').value, 10),
+        bldg_use: document.getElementById('f_building_use').value,
+        remarks: document.getElementById('f_building_remarks').value || '',
+        date_cap: todayStr()
+      }
+    };
+    buildingFeatures.push(feature);
+    persist();
+    redrawSaved();
+    renderFeatureList();
+    document.getElementById('f_building_remarks').value = '';
+    pendingBuildingLL = null;
+    closeModal();
+    setStatus(`Building saved (${floorsToLabel(feature.properties.floors)}, ${feature.properties.bldg_use}). Tap "Add Building" for the next one.`);
+    return;
+  }
   if (mode === 'boundary') {
     let coords = currentTrack.map(c => [c[1], c[0]]); // lon, lat
     if (coords.length > 0 && (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1])) {
@@ -436,9 +580,13 @@ document.getElementById('exportRoadsBtn').addEventListener('click', () => {
   if (roadFeatures.length === 0) { alert('No road features saved yet.'); return; }
   downloadGeoJSON(roadFeatures, 'roads.geojson');
 });
+document.getElementById('exportBuildingsBtn').addEventListener('click', () => {
+  if (buildingFeatures.length === 0) { alert('No building features saved yet.'); return; }
+  downloadGeoJSON(buildingFeatures, 'buildings.geojson');
+});
 document.getElementById('clearAllBtn').addEventListener('click', () => {
-  if (!confirm('This will permanently delete all saved boundary and road features. Continue?')) return;
-  boundaryFeatures = []; roadFeatures = [];
+  if (!confirm('This will permanently delete all saved boundary, road, and building features. Continue?')) return;
+  boundaryFeatures = []; roadFeatures = []; buildingFeatures = [];
   persist(); redrawSaved(); renderFeatureList();
 });
 
