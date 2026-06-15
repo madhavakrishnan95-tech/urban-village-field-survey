@@ -29,6 +29,9 @@
   #modalBox label { display:block; margin-top:8px; font-size:13px; font-weight:bold; }
   #modalBox input, #modalBox select, #modalBox textarea { width:100%; box-sizing:border-box; margin-top:4px; }
   #modalBox .row { margin-top:14px; justify-content:flex-end; }
+  .checkbox-group { border:1px solid #eee; border-radius:6px; padding:6px; margin-top:4px; max-height:140px; overflow-y:auto; }
+  .checkbox-group label { display:flex; align-items:center; gap:6px; font-weight:normal; font-size:13px; margin:0; padding:3px 0; }
+  .checkbox-group input[type="checkbox"] { width:auto; margin:0; }
 </style>
 </head>
 <body>
@@ -42,6 +45,7 @@
       <option value="boundary">Village Boundary (polygon)</option>
       <option value="roads">Road (line)</option>
       <option value="buildings">Building (point)</option>
+      <option value="openspace">Open / Green Space (polygon)</option>
     </select>
     <button id="locateBtn" class="secondary">Locate me</button>
   </div>
@@ -67,6 +71,7 @@
     <button id="exportBoundaryBtn" class="secondary">Export Boundary GeoJSON</button>
     <button id="exportRoadsBtn" class="secondary">Export Roads GeoJSON</button>
     <button id="exportBuildingsBtn" class="secondary">Export Buildings GeoJSON</button>
+    <button id="exportOpenSpaceBtn" class="secondary">Export Open Space GeoJSON</button>
     <button id="clearAllBtn" class="danger">Clear All Data</button>
   </div>
   <div id="featureList"></div>
@@ -114,6 +119,39 @@
       </select>
       <label>Remarks</label>
       <textarea id="f_road_remarks" rows="2"></textarea>
+    </div>
+    <div id="openspaceFields" style="display:none;">
+      <label>Park / Open Space Name or Number</label>
+      <input type="text" id="f_os_name" placeholder="e.g. Park near Lane 4 / OS-1">
+      <label>Type of Open Space</label>
+      <select id="f_os_type">
+        <option>Park / Garden</option>
+        <option>Playground / Open Ground (Maidan)</option>
+        <option>Parking Area</option>
+        <option>Vacant Plot / Land</option>
+        <option>Other</option>
+      </select>
+      <label>Tree Cover</label>
+      <select id="f_os_trees">
+        <option>No trees</option>
+        <option>Few trees (1-5)</option>
+        <option>Moderate (6-15)</option>
+        <option>Dense green cover (15+)</option>
+      </select>
+      <label>Amenities (tick all that apply)</label>
+      <div class="checkbox-group">
+        <label><input type="checkbox" class="os-amenity" value="Walking track/path"> Walking track / path</label>
+        <label><input type="checkbox" class="os-amenity" value="Play area"> Play area / playground equipment</label>
+        <label><input type="checkbox" class="os-amenity" value="Open-air gym"> Open-air gym</label>
+        <label><input type="checkbox" class="os-amenity" value="Seating/benches"> Seating / benches</label>
+        <label><input type="checkbox" class="os-amenity" value="Religious structure"> Religious structure / shrine</label>
+        <label><input type="checkbox" class="os-amenity" value="Drinking water"> Drinking water point</label>
+        <label><input type="checkbox" class="os-amenity" value="Toilet"> Toilet</label>
+        <label><input type="checkbox" class="os-amenity" value="Lighting"> Street lighting</label>
+        <label><input type="checkbox" class="os-amenity" value="None"> None</label>
+      </div>
+      <label>Remarks</label>
+      <textarea id="f_os_remarks" rows="2"></textarea>
     </div>
     <div id="buildingFields" style="display:none;">
       <label>Number of Floors</label>
@@ -188,6 +226,7 @@ let liveLine = null;
 let boundaryFeatures = JSON.parse(localStorage.getItem('boundaryFeatures') || '[]');
 let roadFeatures = JSON.parse(localStorage.getItem('roadFeatures') || '[]');
 let buildingFeatures = JSON.parse(localStorage.getItem('buildingFeatures') || '[]');
+let openspaceFeatures = JSON.parse(localStorage.getItem('openspaceFeatures') || '[]');
 let savedLayers = [];
 
 let manualPointMode = false; // true while "Add Manual Point" (map-tap) is armed
@@ -236,6 +275,13 @@ function redrawSaved() {
     marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>Units: ${f.properties.units}<br>${f.properties.remarks || ''}`);
     savedLayers.push(marker);
   });
+  openspaceFeatures.forEach(f => {
+    const latlngs = f.geometry.coordinates[0].map(c => [c[1], c[0]]);
+    const poly = L.polygon(latlngs, {color:'teal', weight:2, fillColor:'lightgreen', fillOpacity:0.35}).addTo(map);
+    const amenitiesStr = (f.properties.amenities && f.properties.amenities.length) ? f.properties.amenities.join(', ') : 'None';
+    poly.bindPopup(`<b>${f.properties.os_name || '(unnamed)'}</b><br>Type: ${f.properties.os_type}<br>Trees: ${f.properties.tree_cover}<br>Amenities: ${amenitiesStr}<br>${f.properties.remarks || ''}`);
+    savedLayers.push(poly);
+  });
 }
 
 function floorsToLabel(floors) {
@@ -254,6 +300,9 @@ function renderFeatureList() {
   buildingFeatures.forEach((f, i) => {
     html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}, ${f.properties.units} unit(s)</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
   });
+  openspaceFeatures.forEach((f, i) => {
+    html += `<div class="feature-item"><span>[Open Space] ${f.properties.os_name || '(unnamed)'} (${f.properties.os_type})</span><button onclick="deleteFeature('openspace',${i})">Delete</button></div>`;
+  });
   el.innerHTML = html || '<i>No features saved yet.</i>';
 }
 
@@ -261,7 +310,8 @@ function deleteFeature(layer, idx) {
   if (!confirm('Delete this feature?')) return;
   if (layer === 'boundary') boundaryFeatures.splice(idx,1);
   else if (layer === 'roads') roadFeatures.splice(idx,1);
-  else buildingFeatures.splice(idx,1);
+  else if (layer === 'buildings') buildingFeatures.splice(idx,1);
+  else openspaceFeatures.splice(idx,1);
   persist();
   redrawSaved();
   renderFeatureList();
@@ -271,6 +321,7 @@ function persist() {
   localStorage.setItem('boundaryFeatures', JSON.stringify(boundaryFeatures));
   localStorage.setItem('roadFeatures', JSON.stringify(roadFeatures));
   localStorage.setItem('buildingFeatures', JSON.stringify(buildingFeatures));
+  localStorage.setItem('openspaceFeatures', JSON.stringify(openspaceFeatures));
 }
 
 function todayStr() {
@@ -376,6 +427,7 @@ function openBuildingModal(ll) {
   document.getElementById('modalTitle').textContent = 'Building details';
   document.getElementById('boundaryFields').style.display = 'none';
   document.getElementById('roadFields').style.display = 'none';
+  document.getElementById('openspaceFields').style.display = 'none';
   document.getElementById('buildingFields').style.display = 'block';
 }
 
@@ -462,7 +514,7 @@ function resetButtons() {
 function finishRecording() {
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = null;
-  if (currentTrack.length < (mode === 'boundary' ? 3 : 2)) {
+  if (currentTrack.length < ((mode === 'boundary' || mode === 'openspace') ? 3 : 2)) {
     alert(`Not enough points captured yet (${currentTrack.length}). Keep walking and recording.`);
     // re-arm watch
     startRecording();
@@ -476,13 +528,17 @@ function openModal() {
   modalContext = 'feature';
   document.getElementById('modalOverlay').style.display = 'flex';
   document.getElementById('buildingFields').style.display = 'none';
+  document.getElementById('boundaryFields').style.display = 'none';
+  document.getElementById('roadFields').style.display = 'none';
+  document.getElementById('openspaceFields').style.display = 'none';
   if (mode === 'boundary') {
     document.getElementById('modalTitle').textContent = 'Boundary details';
     document.getElementById('boundaryFields').style.display = 'block';
-    document.getElementById('roadFields').style.display = 'none';
+  } else if (mode === 'openspace') {
+    document.getElementById('modalTitle').textContent = 'Open / Green Space details';
+    document.getElementById('openspaceFields').style.display = 'block';
   } else {
     document.getElementById('modalTitle').textContent = 'Road details';
-    document.getElementById('boundaryFields').style.display = 'none';
     document.getElementById('roadFields').style.display = 'block';
   }
 }
@@ -538,6 +594,25 @@ document.getElementById('modalSave').addEventListener('click', () => {
       }
     };
     boundaryFeatures.push(feature);
+  } else if (mode === 'openspace') {
+    let coords = currentTrack.map(c => [c[1], c[0]]); // lon, lat
+    if (coords.length > 0 && (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1])) {
+      coords.push(coords[0]); // close the ring
+    }
+    const amenities = Array.from(document.querySelectorAll('.os-amenity:checked')).map(cb => cb.value);
+    const feature = {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [coords] },
+      properties: {
+        os_name: document.getElementById('f_os_name').value || '',
+        os_type: document.getElementById('f_os_type').value,
+        tree_cover: document.getElementById('f_os_trees').value,
+        amenities: amenities,
+        remarks: document.getElementById('f_os_remarks').value || '',
+        date_cap: todayStr()
+      }
+    };
+    openspaceFeatures.push(feature);
   } else {
     const coords = currentTrack.map(c => [c[1], c[0]]); // lon, lat
     const feature = {
@@ -563,6 +638,11 @@ document.getElementById('modalSave').addEventListener('click', () => {
   document.getElementById('f_road_name').value = '';
   document.getElementById('f_width_m').value = '';
   document.getElementById('f_road_remarks').value = '';
+  document.getElementById('f_os_name').value = '';
+  document.getElementById('f_os_type').selectedIndex = 0;
+  document.getElementById('f_os_trees').selectedIndex = 0;
+  document.querySelectorAll('.os-amenity').forEach(cb => cb.checked = false);
+  document.getElementById('f_os_remarks').value = '';
   currentTrack = [];
   if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
   closeModal();
@@ -593,9 +673,13 @@ document.getElementById('exportBuildingsBtn').addEventListener('click', () => {
   if (buildingFeatures.length === 0) { alert('No building features saved yet.'); return; }
   downloadGeoJSON(buildingFeatures, `buildings_${todayStr()}.geojson`);
 });
+document.getElementById('exportOpenSpaceBtn').addEventListener('click', () => {
+  if (openspaceFeatures.length === 0) { alert('No open space features saved yet.'); return; }
+  downloadGeoJSON(openspaceFeatures, `openspace_${todayStr()}.geojson`);
+});
 document.getElementById('clearAllBtn').addEventListener('click', () => {
-  if (!confirm('This will permanently delete all saved boundary, road, and building features. Continue?')) return;
-  boundaryFeatures = []; roadFeatures = []; buildingFeatures = [];
+  if (!confirm('This will permanently delete all saved boundary, road, building, and open space features. Continue?')) return;
+  boundaryFeatures = []; roadFeatures = []; buildingFeatures = []; openspaceFeatures = [];
   persist(); redrawSaved(); renderFeatureList();
 });
 
