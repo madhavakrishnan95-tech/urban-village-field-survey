@@ -657,14 +657,31 @@ document.getElementById('modalSave').addEventListener('click', () => {
 });
 
 // ---------- Export ----------
-function downloadGeoJSON(features, filename) {
-  const fc = { type: 'FeatureCollection', features: features };
-  const blob = new Blob([JSON.stringify(fc, null, 2)], {type:'application/geo+json'});
+// Tries the native share sheet first (so on a phone you can pick "Save to Drive"
+// directly). Falls back to a normal browser download if sharing files isn't
+// supported (e.g. on desktop) or the user cancels the share with an error.
+async function shareOrDownloadBlob(blob, filename, mimeType) {
+  try {
+    const file = new File([blob], filename, {type: mimeType});
+    if (navigator.canShare && navigator.canShare({files: [file]})) {
+      await navigator.share({files: [file], title: filename});
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return; // user cancelled the share sheet
+    // otherwise fall through to download
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function downloadGeoJSON(features, filename) {
+  const fc = { type: 'FeatureCollection', features: features };
+  const blob = new Blob([JSON.stringify(fc, null, 2)], {type:'application/geo+json'});
+  shareOrDownloadBlob(blob, filename, 'application/geo+json');
 }
 
 function downloadCSV(rows, headers, filename) {
@@ -679,11 +696,7 @@ function downloadCSV(rows, headers, filename) {
   const lines = [headers.join(',')];
   rows.forEach(r => lines.push(headers.map(h => escapeCell(r[h])).join(',')));
   const blob = new Blob([lines.join('\n')], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  shareOrDownloadBlob(blob, filename, 'text/csv');
 }
 
 document.getElementById('exportBoundaryBtn').addEventListener('click', () => {
