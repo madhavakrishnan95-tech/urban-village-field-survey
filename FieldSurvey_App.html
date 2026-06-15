@@ -134,6 +134,14 @@
         <option>Vacant / Under Construction</option>
         <option>Other</option>
       </select>
+      <label>Number of Properties/Units Here</label>
+      <select id="f_building_units">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5+</option>
+      </select>
       <label>Remarks</label>
       <textarea id="f_building_remarks" rows="2"></textarea>
     </div>
@@ -225,7 +233,7 @@ function redrawSaved() {
     const ll = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
     const floorLabel = floorsToLabel(f.properties.floors);
     const marker = L.circleMarker(ll, {radius:5, color:'darkorange', fillColor:'orange', fillOpacity:0.9}).addTo(map);
-    marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>${f.properties.remarks || ''}`);
+    marker.bindPopup(`<b>Building (${floorLabel})</b><br>Use: ${f.properties.bldg_use}<br>Units: ${f.properties.units}<br>${f.properties.remarks || ''}`);
     savedLayers.push(marker);
   });
 }
@@ -244,7 +252,7 @@ function renderFeatureList() {
     html += `<div class="feature-item"><span>[Road] ${f.properties.road_name || '(unnamed)'} (${f.properties.road_type}, ${f.properties.width_m}m)</span><button onclick="deleteFeature('roads',${i})">Delete</button></div>`;
   });
   buildingFeatures.forEach((f, i) => {
-    html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
+    html += `<div class="feature-item"><span>[Building] ${floorsToLabel(f.properties.floors)}, ${f.properties.bldg_use}, ${f.properties.units} unit(s)</span><button onclick="deleteFeature('buildings',${i})">Delete</button></div>`;
   });
   el.innerHTML = html || '<i>No features saved yet.</i>';
 }
@@ -500,6 +508,7 @@ document.getElementById('modalSave').addEventListener('click', () => {
       properties: {
         floors: parseInt(document.getElementById('f_building_floors').value, 10),
         bldg_use: document.getElementById('f_building_use').value,
+        units: parseInt(document.getElementById('f_building_units').value, 10),
         remarks: document.getElementById('f_building_remarks').value || '',
         date_cap: todayStr()
       }
@@ -511,7 +520,7 @@ document.getElementById('modalSave').addEventListener('click', () => {
     document.getElementById('f_building_remarks').value = '';
     pendingBuildingLL = null;
     closeModal();
-    setStatus(`Building saved (${floorsToLabel(feature.properties.floors)}, ${feature.properties.bldg_use}). Tap "Add Building" for the next one.`);
+    setStatus(`Building saved (${floorsToLabel(feature.properties.floors)}, ${feature.properties.bldg_use}, ${feature.properties.units} unit(s)). Tap "Add Building" for the next one.`);
     return;
   }
   if (mode === 'boundary') {
@@ -574,15 +583,15 @@ function downloadGeoJSON(features, filename) {
 
 document.getElementById('exportBoundaryBtn').addEventListener('click', () => {
   if (boundaryFeatures.length === 0) { alert('No boundary features saved yet.'); return; }
-  downloadGeoJSON(boundaryFeatures, 'boundary.geojson');
+  downloadGeoJSON(boundaryFeatures, `boundary_${todayStr()}.geojson`);
 });
 document.getElementById('exportRoadsBtn').addEventListener('click', () => {
   if (roadFeatures.length === 0) { alert('No road features saved yet.'); return; }
-  downloadGeoJSON(roadFeatures, 'roads.geojson');
+  downloadGeoJSON(roadFeatures, `roads_${todayStr()}.geojson`);
 });
 document.getElementById('exportBuildingsBtn').addEventListener('click', () => {
   if (buildingFeatures.length === 0) { alert('No building features saved yet.'); return; }
-  downloadGeoJSON(buildingFeatures, 'buildings.geojson');
+  downloadGeoJSON(buildingFeatures, `buildings_${todayStr()}.geojson`);
 });
 document.getElementById('clearAllBtn').addEventListener('click', () => {
   if (!confirm('This will permanently delete all saved boundary, road, and building features. Continue?')) return;
