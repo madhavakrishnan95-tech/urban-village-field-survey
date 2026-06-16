@@ -238,7 +238,10 @@ let buildingTapMode = false;  // true while "Add Building (Tap Map)" is armed
 let pendingBuildingLL = null; // [lat,lon] awaiting building attribute save
 let modalContext = 'feature'; // 'feature' (boundary/road track) or 'building'
 
-const MIN_DISTANCE_M = 2; // minimum movement before adding a new point
+const MIN_DISTANCE_M = 2;       // minimum movement before adding a new track point
+const MAX_ACCURACY_M = 25;      // ignore GPS readings worse than this during recording
+const PRECISE_TARGET_M = 8;     // one-shot capture: stop collecting if accuracy reaches this
+const PRECISE_TIMEOUT_MS = 10000; // one-shot capture: give up after this many ms
 
 // ---------- Helpers ----------
 function haversine(a, b) {
@@ -253,6 +256,33 @@ function haversine(a, b) {
 
 function setStatus(msg) {
   document.getElementById('status').textContent = msg;
+}
+
+// High-precision one-shot position: watches for up to PRECISE_TIMEOUT_MS,
+// keeps the best reading seen, stops early if accuracy <= PRECISE_TARGET_M.
+function getPrecisePosition(onSuccess, onError, statusPrefix) {
+  let best = null;
+  let wid = null;
+  const timer = setTimeout(() => {
+    navigator.geolocation.clearWatch(wid);
+    if (best) onSuccess(best);
+    else onError(new Error('Could not get a precise location in time. Try moving to an open area.'));
+  }, PRECISE_TIMEOUT_MS);
+  wid = navigator.geolocation.watchPosition(pos => {
+    if (!best || pos.coords.accuracy < best.coords.accuracy) {
+      best = pos;
+      if (statusPrefix) setStatus(`${statusPrefix} — accuracy: ${pos.coords.accuracy.toFixed(1)} m`);
+    }
+    if (pos.coords.accuracy <= PRECISE_TARGET_M) {
+      clearTimeout(timer);
+      navigator.geolocation.clearWatch(wid);
+      onSuccess(best);
+    }
+  }, err => {
+    clearTimeout(timer);
+    navigator.geolocation.clearWatch(wid);
+    onError(err);
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
 }
 
 function redrawSaved() {
@@ -367,12 +397,24 @@ document.getElementById('modeSelect').addEventListener('change', e => {
 
 document.getElementById('locateBtn').addEventListener('click', () => {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
-  navigator.geolocation.getCurrentPosition(pos => {
+  const btn = document.getElementById('locateBtn');
+  btn.disabled = true;
+  btn.textContent = 'Locating…';
+  setStatus('Getting precise location — please wait (up to 10 s)…');
+  getPrecisePosition(pos => {
+    btn.disabled = false;
+    btn.textContent = 'Locate me';
     const ll = [pos.coords.latitude, pos.coords.longitude];
-    map.setView(ll, 18);
+    map.setView(ll, 19);
     if (currentMarker) map.removeLayer(currentMarker);
-    currentMarker = L.marker(ll).addTo(map).bindPopup(`Accuracy: ${pos.coords.accuracy.toFixed(1)} m`).openPopup();
-  }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
+    currentMarker = L.circleMarker(ll, {radius:10, color:'#1a56cc', fillColor:'#4d90fe', fillOpacity:0.85})
+      .addTo(map).bindPopup(`Your location<br><b>Accuracy: ${pos.coords.accuracy.toFixed(1)} m</b>`).openPopup();
+    setStatus(`Located! Accuracy: ${pos.coords.accuracy.toFixed(1)} m`);
+  }, err => {
+    btn.disabled = false;
+    btn.textContent = 'Locate me';
+    setStatus('Location error: ' + err.message);
+  }, 'Scanning for best GPS signal');
 });
 
 document.getElementById('recordBtn').addEventListener('click', startRecording);
@@ -397,9 +439,18 @@ document.getElementById('addManualBtn').addEventListener('click', () => {
 
 document.getElementById('addSnapshotBtn').addEventListener('click', () => {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
-  navigator.geolocation.getCurrentPosition(pos => {
+  const btn = document.getElementById('addSnapshotBtn');
+  btn.disabled = true;
+  btn.textContent = 'Getting precise fix…';
+  getPrecisePosition(pos => {
+    btn.disabled = false;
+    btn.textContent = 'Add GPS Snapshot';
     addManualPoint([pos.coords.latitude, pos.coords.longitude], 'gps_snapshot');
-  }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
+  }, err => {
+    btn.disabled = false;
+    btn.textContent = 'Add GPS Snapshot';
+    setStatus('GPS error: ' + err.message);
+  }, 'GPS Snapshot — scanning');
 });
 
 // ---------- Building point capture ----------
@@ -419,9 +470,19 @@ document.getElementById('addBuildingTapBtn').addEventListener('click', () => {
 
 document.getElementById('addBuildingGpsBtn').addEventListener('click', () => {
   if (!navigator.geolocation) { alert('Geolocation not supported in this browser.'); return; }
-  navigator.geolocation.getCurrentPosition(pos => {
+  const btn = document.getElementById('addBuildingGpsBtn');
+  btn.disabled = true;
+  btn.textContent = 'Getting precise fix…';
+  setStatus('Getting precise GPS position for building — please wait…');
+  getPrecisePosition(pos => {
+    btn.disabled = false;
+    btn.textContent = 'Add Building (GPS)';
     openBuildingModal([pos.coords.latitude, pos.coords.longitude]);
-  }, err => alert('Location error: ' + err.message), {enableHighAccuracy:true});
+  }, err => {
+    btn.disabled = false;
+    btn.textContent = 'Add Building (GPS)';
+    setStatus('GPS error: ' + err.message);
+  }, 'Building GPS — scanning');
 });
 
 function openBuildingModal(ll) {
@@ -458,6 +519,14 @@ function startRecording() {
   }
 
   watchId = navigator.geolocation.watchPosition(pos => {
+    const acc = pos.coords.accuracy;
+
+    // Reject readings with very poor accuracy (multipath noise in narrow lanes)
+    if (acc > MAX_ACCURACY_M) {
+      setStatus(`Weak GPS signal (${acc.toFixed(0)} m) — waiting for better fix… ${currentTrack.length} pts so far.`);
+      return;
+    }
+
     const ll = [pos.coords.latitude, pos.coords.longitude];
     if (currentMarker) map.removeLayer(currentMarker);
     currentMarker = L.circleMarker(ll, {radius:6, color:'blue'}).addTo(map);
@@ -467,10 +536,10 @@ function startRecording() {
       liveLine.setLatLngs(currentTrack);
       map.panTo(ll);
     }
-    setStatus(`Recording ${mode}... ${currentTrack.length} points captured. Accuracy: ${pos.coords.accuracy.toFixed(1)} m`);
+    setStatus(`Recording ${mode}… ${currentTrack.length} pts captured. Accuracy: ${acc.toFixed(1)} m`);
   }, err => {
     setStatus('GPS error: ' + err.message);
-  }, {enableHighAccuracy:true, maximumAge:0});
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
 }
 
 function pauseRecording() {
